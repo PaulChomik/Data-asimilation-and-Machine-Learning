@@ -7,15 +7,11 @@ sys.path.insert(0, '/usr/lib64/python3.11/site-packages')
 sys.path = [p for p in sys.path if '/home/chomik/.local/lib/python3.11/site-packages' not in p]
 
 #################################FIN de BORRAR O COMENTAR SI NO SOS PAUL##################################
-
 import scipy as sci
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.model_selection import train_test_split
-
-
-
 
 # --- 1. PARÁMETROS CLAVE DEL EXPERIMENTO ---
 D_VARS = 8 # Número de variables (N=8)
@@ -73,38 +69,21 @@ print(f"Número de ciclos de asimilación: {len(X_TRUE_ASIM) - 1}") # M_CYCLES
 
 # --- 4. PREPARACIÓN DEL ENKF DE REFERENCIA ---
 
-# Funciones del EnKF (re-utilizadas de tu código, simplificadas para el Gold Standard)
-def get_syn_observations(y_true, R, Nens):
-    # y_true es H @ x_true (observación ideal)
-    white_noise = np.random.multivariate_normal(np.zeros(m), R, size=Nens).T
-    # Perturbamos el vector de observación con ruido R
-    Ys = y_true + white_noise 
-    return Ys
-
 def get_syn_observations(y_true, R, Nens):
     # m es el número de observaciones (6 en este caso)
     m = R.shape[0] 
     
     # 1. Generar un ensamble de vectores de ruido (m, Nens)
-    # np.random.multivariate_normal(..., size=Nens) genera (100, 6). Transponemos a (6, 100).
     white_noise = np.random.multivariate_normal(np.zeros(m), R, size=Nens).T 
     
-    # 2. CORRECCIÓN: Reformar el vector de observación (y_true) de (6,) a (6, 1) 
-    # para que se sume correctamente a cada una de las 100 columnas de ruido.
+    # 2. Reformar el vector de observación (y_true) de (6,) a (6, 1) 
     y_true_reshaped = y_true.reshape(-1, 1) 
     
     # 3. Ys es el ensamble de observaciones (6, 100)
     Ys = y_true_reshaped + white_noise 
-    return Yso
+    return Ys
 
 def compute_analysis_enkf_obs(XB, PB, H, Ys, R):
-    # La matriz de covarianza de error del background es P^b (PB)
-    # Ds = Ys - H @ XB (La innovación del ensamble)
-    
-    # Versión de EnKF estocástico, no la versión determinista que usaste (EnKF-OBS)
-    # Aquí es mejor usar una versión de EnKF estocástico con ensamble
-    # Para simplicidad y siguiendo tu estructura, usamos la versión determinista (compute_analysis_enkf_obs)
-
     XB_mean = np.mean(XB, axis=1) # media del ensamble (forecast mean)
     Ds = Ys - H @ XB # Innovación de cada miembro
 
@@ -124,13 +103,19 @@ white_noise = np.random.randn(N_ENS_REF, n)
 e_0 = ic_ref + 0.05 * white_noise # Ensamble inicial perturbado
 XB = e_0.T # (nvars, Nens)
 
-# Inicializamos las listas para guardar los datos de entrenamiento
+# Inicializamos las listas para guardar los datos de entrenamiento CON LOS 3 PROXIES
 
 training_data = {
-    'X_PREV_A': [],   # x_{k-1}^{a}
-    'X_FORECAST_B': [], # x_{k}^{f} (o x_b)
-    'TARGET_ERR_COV': [], # El objetivo: Matriz epsilon * epsilon^T
-    'PB_ENS_REF': [], # Covarianza del ensamble de referencia (para comparación)
+    'X_PREV_A': [],        # x_{k-1}^{a} (análisis medio del paso anterior)
+    'X_FORECAST_B': [],    # x_{k}^{f} (pronóstico medio actual)
+    
+    # LOS 3 PROXIES DEL PAPER:
+    'TARGET_COV_MMA': [],  # Proxy MMA: (x_forecast_b - x_analysis_mean) @ (x_forecast_b - x_analysis_mean).T
+    'TARGET_COV_MRA': [],  # Proxy MRA: (x_forecast_b - x_analysis_random_member) @ (x_forecast_b - x_analysis_random_member).T  
+    'TARGET_COV_MNT': [],  # Proxy MNT: (x_forecast_b - x_true) @ (x_forecast_b - x_true).T
+    
+    'PB_ENS_REF': [],      # Covarianza del ensamble de referencia (para comparación)
+    'XA_ENSEMBLE': []      # Guardamos el ensamble completo de análisis para MRA
 }
 
 # --- 6. BUCLE PRINCIPAL DE ASIMILACIÓN (GENERACIÓN DE DATOS) ---
@@ -158,20 +143,37 @@ for k in range(1, M_CYCLES):
     XA = compute_analysis_enkf_obs(XB, PB, H, Ys, R)
     xa_mean = np.mean(XA, axis=1) # Analysis mean (x_k^a)
 
-    # 5. CÁLCULO DEL TARGET DE LA RNA (ERROR PROXY)
-    # epsilon = x_true - x_analysis_mean (El error de análisis respecto a la verdad)
-    epsilon_k = x_true_k - xa_mean
-    # Target: Matriz de Covarianza del Error Realizado
-    TARGET_COV = np.outer(epsilon_k, epsilon_k)
+    # 5. CÁLCULO DE LOS 3 PROXIES (MMA, MRA, MNT)
+    
+    # Proxy MMA: Mean Forecast - Mean Analysis
+    epsilon_MMA = xb_mean - xa_mean
+    TARGET_COV_MMA = np.outer(epsilon_MMA, epsilon_MMA)
+    
+    # Proxy MRA: Mean Forecast - Random Analysis member
+    random_member_idx = np.random.randint(0, N_ENS_REF)
+    xa_random = XA[:, random_member_idx]
+    epsilon_MRA = xb_mean - xa_random
+    TARGET_COV_MRA = np.outer(epsilon_MRA, epsilon_MRA)
+    
+    # Proxy MNT: Mean Forecast - Nature (true state)
+    epsilon_MNT = xb_mean - x_true_k
+    TARGET_COV_MNT = np.outer(epsilon_MNT, epsilon_MNT)
     
     # 6. GUARDAR DATOS DE ENTRENAMIENTO
     training_data['X_PREV_A'].append(x_prev_a)
     training_data['X_FORECAST_B'].append(xb_mean)
-    training_data['TARGET_ERR_COV'].append(TARGET_COV)
+    training_data['TARGET_COV_MMA'].append(TARGET_COV_MMA)
+    training_data['TARGET_COV_MRA'].append(TARGET_COV_MRA)
+    training_data['TARGET_COV_MNT'].append(TARGET_COV_MNT)
     training_data['PB_ENS_REF'].append(PB)
+    training_data['XA_ENSEMBLE'].append(XA.copy())  # Guardar ensamble completo para posibles usos futuros
     
     # 7. ITERACIÓN
     XB = XA # El análisis se convierte en el initial condition del próximo forecast
+
+    # Progress indicator
+    if k % 100 == 0:
+        print(f"Completado ciclo {k}/{M_CYCLES}")
 
 print("\n--- Generación de Datos Completa ---")
 print(f"Datos de entrenamiento guardados: {len(training_data['X_FORECAST_B'])} ciclos.")
@@ -181,13 +183,17 @@ print(f"Datos de entrenamiento guardados: {len(training_data['X_FORECAST_B'])} c
 for key in training_data:
     training_data[key] = np.stack(training_data[key], axis=0)
 
-# El nombre del archivo ahora refleja que son datos de alta calidad para la RNA
+# Guardar todos los datos con los 3 proxies
 np.savez(
-    "data_N8_ENS100_largo.npz",
+    "data_N8_ENS100_3proxies.npz",
     X_PREV_A=training_data['X_PREV_A'],
     X_FORECAST_B=training_data['X_FORECAST_B'],
-    TARGET_ERR_COV=training_data['TARGET_ERR_COV'],
-    PB_ENS_REF=training_data['PB_ENS_REF']
+    TARGET_COV_MMA=training_data['TARGET_COV_MMA'],
+    TARGET_COV_MRA=training_data['TARGET_COV_MRA'], 
+    TARGET_COV_MNT=training_data['TARGET_COV_MNT'],
+    PB_ENS_REF=training_data['PB_ENS_REF'],
+    XA_ENSEMBLE=training_data['XA_ENSEMBLE']
 )
 
-print("\nArchivo 'gold_standard_data_N8_ENS100.npz' creado con los pares de entrenamiento.") 
+print("\nArchivo 'data_N8_ENS100_3proxies.npz' creado con los 3 proxies de entrenamiento.")
+print("Proxies incluidos: MMA, MRA, MNT")
