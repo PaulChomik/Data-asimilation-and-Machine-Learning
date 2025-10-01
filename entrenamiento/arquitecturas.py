@@ -48,3 +48,6 @@ class NN_BASE_COMPACTA(nn.Module):
         matriz_simetrica = matriz_simetrica - diagonal
         
         return matriz_simetrica
+    
+    
+class Unet_base(nn.Module):
