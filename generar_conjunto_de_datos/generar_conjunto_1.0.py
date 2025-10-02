@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.model_selection import train_test_split
 
+n = 12
+np.random.seed(n);
 # --- 1. PARÁMETROS CLAVE DEL EXPERIMENTO ---
 D_VARS = 8 # Número de variables (N=8)
 DT_INTEGRACION = 0.005 # Paso de integración (dt)
